@@ -62,6 +62,7 @@ print("ESP32 sends: 'Hello World from ESP32!'")
 print("Python responds: 'Hello again ESP32!'")
 print("\n👂 Waiting for ESP32 messages...")
 print("Press Ctrl+C to exit\n")
+print("\n" + "="*50)
 
 # Keep the program running
 try:
