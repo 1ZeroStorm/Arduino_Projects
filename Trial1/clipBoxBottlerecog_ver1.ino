@@ -142,6 +142,7 @@ void setup()
         ei_printf("Camera initialized\r\n");
     }
     pinMode(4, OUTPUT);
+    digitalWrite(4, HIGH);
 
     ei_printf("\nStarting continious inference in 2 seconds...\n");
     ei_sleep(2000);
@@ -282,6 +283,10 @@ bool ei_camera_init(void) {
     s->set_hmirror(s, 1);
     s->set_awb_gain(s, 1);
 #endif
+
+    // Rotate camera output 180 degrees (vertical flip + horizontal mirror)
+    s->set_vflip(s, 1);
+    s->set_hmirror(s, 1);
 
     is_initialised = true;
     return true;
