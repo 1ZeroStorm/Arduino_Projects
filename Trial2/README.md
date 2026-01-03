@@ -10,6 +10,7 @@ pip install -r Trial2/requirements.txt
 - Select the correct COM port (Windows) or /dev/ttyUSB0 (Linux/Mac)
 - Set baud rate to 115200
 - Click "Connect"
+- DO NOT open the serial monitor inside of the arduino IDE or else it wont connect to the python script, the COM port only accepts 1 connection
 2) run esp32_gui.py
 
 ## whats worked and not worked
