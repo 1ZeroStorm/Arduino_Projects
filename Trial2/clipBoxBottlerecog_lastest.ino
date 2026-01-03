@@ -29,7 +29,6 @@
 
 #include "esp_camera.h"
 
-
 // Select camera model - find more camera models in camera_pins.h file here
 // https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h
 
@@ -88,9 +87,10 @@ static bool debug_nn = false; // Set this to true to see e.g. features generated
 static bool is_initialised = false;
 uint8_t *snapshot_buf; //points to the output of the capture
 
-// Serial UI globals (for local Python GUI)
+// For local Python GUI communication
 String last_label = "N/A";
 float last_confidence = 0.0f;
+bool send_to_serial = true;  // Set to true to enable data output for Python GUI
 
 static camera_config_t camera_config = {
     .pin_pwdn = PWDN_GPIO_NUM,
@@ -128,7 +128,8 @@ static camera_config_t camera_config = {
 /* Function definitions ------------------------------------------------------- */
 bool ei_camera_init(void);
 void ei_camera_deinit(void);
-bool ei_camera_capture(uint32_t img_width, uint32_t img_height, uint8_t *out_buf) ;
+bool ei_camera_capture(uint32_t img_width, uint32_t img_height, uint8_t *out_buf);
+static int ei_camera_get_data(size_t offset, size_t length, float *out_ptr);
 
 /**
 * @brief      Arduino setup function
@@ -137,58 +138,21 @@ void setup()
 {
     // put your setup code here, to run once:
     Serial.begin(115200);
-    //comment out the below line to start inference immediately after upload
-    while (!Serial);
-    Serial.println("Edge Impulse Inferencing Demo");
+    Serial.println("Edge Impulse Inferencing Demo - Local GUI Version");
+    
     if (ei_camera_init() == false) {
-        ei_printf("Failed to initialize Camera!\r\n");
+        Serial.println("Failed to initialize Camera!");
     }
     else {
-        ei_printf("Camera initialized\r\n");
+        Serial.println("Camera initialized");
     }
+    
     pinMode(4, OUTPUT);
     digitalWrite(4, HIGH);
 
-    // Start WiFi Access Point for web UI
-    const char* ap_ssid = "ESP32-CAM-UI";
-    const char* ap_pass = "esp32cam"; // change or set to NULL for open AP
-    WiFi.softAP(ap_ssid, ap_pass);
-    IPAddress ip = WiFi.softAPIP();
-    ei_printf("Web UI available at http://%s/\r\n", ip.toString().c_str());
-
-    // Root page: preview + classification
-    server.on("/", HTTP_GET, [](){
-        String page = "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>ESP32 Camera UI</title>"
-            "<style>body{font-family:Arial,Helvetica,sans-serif;background:#111;color:#eee;display:flex;flex-direction:column;align-items:center;margin:0;padding:12px}#card{background:#1a1a1a;padding:12px;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,0.6);max-width:720px;width:100%}img{width:100%;height:auto;border-radius:4px;border:1px solid #222}h1{font-size:18px;margin:6px 0}#result{display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding:8px;background:#0f0f0f;border-radius:6px}#label{font-weight:700}#conf{color:#9ad}</style></head><body>"
-            "<div id=\"card\"><h1>ESP32 Camera Preview</h1><img id=\"cam\" src=\"/capture?d=0\"><div id=\"result\"><div id=\"label\">Label: <span id=\"labtxt\">N/A</span></div><div id=\"conf\">Confidence: <span id=\"conftxt\">0.000</span></div></div></div>"
-            "<script>function upd(){document.getElementById('cam').src='/capture?d='+Date.now();fetch('/result').then(r=>r.json()).then(j=>{document.getElementById('labtxt').innerText=j.label;document.getElementById('conftxt').innerText=(j.confidence*100).toFixed(1)+'%'}).catch(e=>{});}setInterval(upd,800);upd();</script></body></html>";
-        server.send(200, "text/html", page);
-    });
-
-    // Capture endpoint - returns a fresh JPEG frame
-    server.on("/capture", HTTP_GET, [](){
-        camera_fb_t * fb = esp_camera_fb_get();
-        if(!fb){ server.send(500, "text/plain", "Camera capture failed"); return; }
-        String jpg((char*)fb->buf, fb->len);
-        server.send(200, "image/jpeg", jpg);
-        esp_camera_fb_return(fb);
-    });
-
-    // Classification result endpoint
-    server.on("/result", HTTP_GET, [](){
-        String json = "{";
-        json += "\"label\":\"" + last_label + "\",";
-        json += "\"confidence\":" + String(last_confidence, 6);
-        json += "}";
-        server.send(200, "application/json", json);
-    });
-
-    server.begin();
-
-    ei_printf("\nStarting continious inference in 2 seconds...\n");
-    ei_sleep(2000);
-
-
+    Serial.println("\nWaiting for connection from Python GUI...");
+    Serial.println("Starting continuous inference...");
+    delay(2000);
 }
 
 /**
@@ -199,16 +163,12 @@ void setup()
 void loop()
 {
     digitalWrite(4, HIGH);
-    // instead of wait_ms, we'll wait on the signal, this allows threads to cancel us...
-    if (ei_sleep(5) != EI_IMPULSE_OK) {
-        return;
-    }
+    delay(5);
 
     snapshot_buf = (uint8_t*)malloc(EI_CAMERA_RAW_FRAME_BUFFER_COLS * EI_CAMERA_RAW_FRAME_BUFFER_ROWS * EI_CAMERA_FRAME_BYTE_SIZE);
 
-    // check if allocation was successful
     if(snapshot_buf == nullptr) {
-        ei_printf("ERR: Failed to allocate snapshot buffer!\n");
+        Serial.println("ERR: Failed to allocate snapshot buffer!");
         return;
     }
 
@@ -216,8 +176,9 @@ void loop()
     signal.total_length = EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT;
     signal.get_data = &ei_camera_get_data;
 
+    // Call the capture function
     if (ei_camera_capture((size_t)EI_CLASSIFIER_INPUT_WIDTH, (size_t)EI_CLASSIFIER_INPUT_HEIGHT, snapshot_buf) == false) {
-        ei_printf("Failed to capture image\r\n");
+        Serial.println("Failed to capture image");
         free(snapshot_buf);
         return;
     }
@@ -227,15 +188,18 @@ void loop()
 
     EI_IMPULSE_ERROR err = run_classifier(&signal, &result, debug_nn);
     if (err != EI_IMPULSE_OK) {
-        ei_printf("ERR: Failed to run classifier (%d)\n", err);
+        Serial.printf("ERR: Failed to run classifier (%d)\n", err);
+        free(snapshot_buf);
         return;
     }
 
-    // Update last classification for web UI
-#if EI_CLASSIFIER_OBJECT_DETECTION == 1
-    // Choose highest-confidence bounding box label if available
+    // Process classification results
     float best_val = 0.0f;
     String best_label = "N/A";
+    int best_idx = 0;
+
+#if EI_CLASSIFIER_OBJECT_DETECTION == 1
+    // Object detection mode
     for (uint32_t i = 0; i < result.bounding_boxes_count; i++) {
         ei_impulse_result_bounding_box_t bb = result.bounding_boxes[i];
         if (bb.value == 0) continue;
@@ -244,36 +208,63 @@ void loop()
             best_label = String(bb.label);
         }
     }
-    if (best_val > 0.0f) {
-        last_label = best_label;
-        last_confidence = best_val;
-    }
 #else
-    // For simple classification pick the highest probability
-    float best_val = 0.0f;
-    int best_idx = 0;
+    // Simple classification mode
     for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
         if (result.classification[i].value > best_val) {
             best_val = result.classification[i].value;
             best_idx = i;
+            best_label = String(ei_classifier_inferencing_categories[best_idx]);
         }
     }
-    last_label = String(ei_classifier_inferencing_categories[best_idx]);
-    last_confidence = best_val;
 #endif
 
-    // print the predictions
-    ei_printf("Predictions (DSP: %d ms., Classification: %d ms., Anomaly: %d ms.): \n",
-                result.timing.dsp, result.timing.classification, result.timing.anomaly);
+    last_label = best_label;
+    last_confidence = best_val;
+
+    // Send structured data to Python GUI
+    if (send_to_serial) {
+        // Create JSON-like output for Python GUI
+        Serial.print("RESULT:");
+        Serial.print("{\"label\":\"");
+        Serial.print(last_label);
+        Serial.print("\",\"confidence\":");
+        Serial.print(last_confidence, 4);
+        
+#if EI_CLASSIFIER_HAS_ANOMALY
+        Serial.print(",\"anomaly\":");
+        Serial.print(result.anomaly, 4);
+#endif
+        
+        Serial.print(",\"timing\":{\"dsp\":");
+        Serial.print(result.timing.dsp);
+        Serial.print(",\"classification\":");
+        Serial.print(result.timing.classification);
+        Serial.print("}");
+        
+        // Include all class probabilities
+        Serial.print(",\"probabilities\":[");
+        for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
+            if (i > 0) Serial.print(",");
+            Serial.print(result.classification[i].value, 4);
+        }
+        Serial.print("]");
+        
+        Serial.println("}");
+    }
+
+    // Print debug info
+    Serial.printf("Predictions (DSP: %d ms., Classification: %d ms.): \n",
+                result.timing.dsp, result.timing.classification);
 
 #if EI_CLASSIFIER_OBJECT_DETECTION == 1
-    ei_printf("Object detection bounding boxes:\r\n");
+    Serial.println("Object detection bounding boxes:");
     for (uint32_t i = 0; i < result.bounding_boxes_count; i++) {
         ei_impulse_result_bounding_box_t bb = result.bounding_boxes[i];
         if (bb.value == 0) {
             continue;
         }
-        ei_printf("  %s (%f) [ x: %u, y: %u, width: %u, height: %u ]\r\n",
+        Serial.printf("  %s (%f) [ x: %u, y: %u, width: %u, height: %u ]\n",
                 bb.label,
                 bb.value,
                 bb.x,
@@ -281,58 +272,27 @@ void loop()
                 bb.width,
                 bb.height);
     }
-
-    // Print the prediction results (classification)
 #else
-    ei_printf("Predictions:\r\n");
+    Serial.println("Classification results:");
     for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
-        ei_printf("  %s: ", ei_classifier_inferencing_categories[i]);
-        ei_printf("%.5f\r\n", result.classification[i].value);
+        Serial.printf("  %s: ", ei_classifier_inferencing_categories[i]);
+        Serial.printf("%.5f\n", result.classification[i].value);
     }
 #endif
 
-    // Print anomaly result (if it exists)
 #if EI_CLASSIFIER_HAS_ANOMALY
-    ei_printf("Anomaly prediction: %.3f\r\n", result.anomaly);
+    Serial.printf("Anomaly prediction: %.3f\n", result.anomaly);
 #endif
-
-#if EI_CLASSIFIER_HAS_VISUAL_ANOMALY
-    ei_printf("Visual anomalies:\r\n");
-    for (uint32_t i = 0; i < result.visual_ad_count; i++) {
-        ei_impulse_result_bounding_box_t bb = result.visual_ad_grid_cells[i];
-        if (bb.value == 0) {
-            continue;
-        }
-        ei_printf("  %s (%f) [ x: %u, y: %u, width: %u, height: %u ]\r\n",
-                bb.label,
-                bb.value,
-                bb.x,
-                bb.y,
-                bb.width,
-                bb.height);
-    }
-#endif
-
 
     free(snapshot_buf);
-
 }
 
 /**
  * @brief   Setup image sensor & start streaming
- *
- * @retval  false if initialisation failed
  */
 bool ei_camera_init(void) {
-
     if (is_initialised) return true;
 
-#if defined(CAMERA_MODEL_ESP_EYE)
-  pinMode(13, INPUT_PULLUP);
-  pinMode(14, INPUT_PULLUP);
-#endif
-
-    //initialize the camera
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK) {
       Serial.printf("Camera init failed with error 0x%x\n", err);
@@ -340,23 +300,12 @@ bool ei_camera_init(void) {
     }
 
     sensor_t * s = esp_camera_sensor_get();
-    // initial sensors are flipped vertically and colors are a bit saturated
     if (s->id.PID == OV3660_PID) {
-      s->set_vflip(s, 1); // flip it back
-      s->set_brightness(s, 1); // up the brightness just a bit
-      s->set_saturation(s, 0); // lower the saturation
+      s->set_vflip(s, 1);
+      s->set_brightness(s, 1);
+      s->set_saturation(s, 0);
     }
 
-#if defined(CAMERA_MODEL_M5STACK_WIDE)
-    s->set_vflip(s, 1);
-    s->set_hmirror(s, 1);
-#elif defined(CAMERA_MODEL_ESP_EYE)
-    s->set_vflip(s, 1);
-    s->set_hmirror(s, 1);
-    s->set_awb_gain(s, 1);
-#endif
-
-    // Rotate camera output 180 degrees (vertical flip + horizontal mirror)
     s->set_vflip(s, 1);
     s->set_hmirror(s, 1);
 
@@ -368,13 +317,10 @@ bool ei_camera_init(void) {
  * @brief      Stop streaming of sensor data
  */
 void ei_camera_deinit(void) {
-
-    //deinitialize the camera
     esp_err_t err = esp_camera_deinit();
 
-    if (err != ESP_OK)
-    {
-        ei_printf("Camera deinit failed\n");
+    if (err != ESP_OK) {
+        Serial.println("Camera deinit failed");
         return;
     }
 
@@ -382,79 +328,76 @@ void ei_camera_deinit(void) {
     return;
 }
 
-
 /**
  * @brief      Capture, rescale and crop image
  *
  * @param[in]  img_width     width of output image
  * @param[in]  img_height    height of output image
- * @param[in]  out_buf       pointer to store output image, NULL may be used
- *                           if ei_camera_frame_buffer is to be used for capture and resize/cropping.
+ * @param[in]  out_buf       pointer to store output image
  *
  * @retval     false if not initialised, image captured, rescaled or cropped failed
- *
  */
 bool ei_camera_capture(uint32_t img_width, uint32_t img_height, uint8_t *out_buf) {
-    bool do_resize = false;
-
     if (!is_initialised) {
-        ei_printf("ERR: Camera is not initialized\r\n");
+        Serial.println("ERR: Camera is not initialized");
         return false;
     }
 
     camera_fb_t *fb = esp_camera_fb_get();
-
     if (!fb) {
-        ei_printf("Camera capture failed\n");
+        Serial.println("Camera capture failed");
         return false;
     }
 
-   bool converted = fmt2rgb888(fb->buf, fb->len, PIXFORMAT_JPEG, snapshot_buf);
+    bool converted = fmt2rgb888(fb->buf, fb->len, PIXFORMAT_JPEG, out_buf);
+    esp_camera_fb_return(fb);
 
-   esp_camera_fb_return(fb);
-
-   if(!converted){
-       ei_printf("Conversion failed\n");
-       return false;
-   }
-
-    if ((img_width != EI_CAMERA_RAW_FRAME_BUFFER_COLS)
-        || (img_height != EI_CAMERA_RAW_FRAME_BUFFER_ROWS)) {
-        do_resize = true;
+    if(!converted){
+        Serial.println("Conversion failed");
+        return false;
     }
 
-    if (do_resize) {
+    // Check if resizing is needed
+    if ((img_width != EI_CAMERA_RAW_FRAME_BUFFER_COLS) || 
+        (img_height != EI_CAMERA_RAW_FRAME_BUFFER_ROWS)) {
         ei::image::processing::crop_and_interpolate_rgb888(
-        out_buf,
-        EI_CAMERA_RAW_FRAME_BUFFER_COLS,
-        EI_CAMERA_RAW_FRAME_BUFFER_ROWS,
-        out_buf,
-        img_width,
-        img_height);
+            out_buf,
+            EI_CAMERA_RAW_FRAME_BUFFER_COLS,
+            EI_CAMERA_RAW_FRAME_BUFFER_ROWS,
+            out_buf,
+            img_width,
+            img_height
+        );
     }
-
 
     return true;
 }
 
-static int ei_camera_get_data(size_t offset, size_t length, float *out_ptr)
-{
-    // we already have a RGB888 buffer, so recalculate offset into pixel index
+/**
+ * @brief      Get data from camera buffer
+ */
+static int ei_camera_get_data(size_t offset, size_t length, float *out_ptr) {
+    // Convert offset to pixel index (RGB888 has 3 bytes per pixel)
     size_t pixel_ix = offset * 3;
     size_t pixels_left = length;
     size_t out_ptr_ix = 0;
 
     while (pixels_left != 0) {
-        // Swap BGR to RGB here
-        // due to https://github.com/espressif/esp32-camera/issues/379
-        out_ptr[out_ptr_ix] = (snapshot_buf[pixel_ix + 2] << 16) + (snapshot_buf[pixel_ix + 1] << 8) + snapshot_buf[pixel_ix];
+        // Convert RGB888 to RGB888 (already in correct format)
+        // The Edge Impulse SDK expects RGB format
+        uint8_t r = snapshot_buf[pixel_ix];
+        uint8_t g = snapshot_buf[pixel_ix + 1];
+        uint8_t b = snapshot_buf[pixel_ix + 2];
+        
+        // Convert to float RGB
+        out_ptr[out_ptr_ix] = (r << 16) + (g << 8) + b;
 
-        // go to the next pixel
+        // Move to next pixel
         out_ptr_ix++;
-        pixel_ix+=3;
+        pixel_ix += 3;
         pixels_left--;
     }
-    // and done!
+    
     return 0;
 }
 
