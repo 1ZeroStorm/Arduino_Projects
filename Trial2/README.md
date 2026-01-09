@@ -1,4 +1,5 @@
 # version 2 with GUI and python integration
+- via tkinter python library
 
 ## Dependencies
 ```bash
@@ -11,7 +12,7 @@ pip install -r Trial2/requirements.txt
 - Set baud rate to 115200
 - Click "Connect"
 - DO NOT open the serial monitor inside of the arduino IDE or else it wont connect to the python script, the COM port only accepts 1 connection
-2) run esp32_gui.py
+2) run esp32_gui_ver2.py
 
 ## whats worked and not worked
 1) worked: 
@@ -21,4 +22,4 @@ pip install -r Trial2/requirements.txt
 
 2) needs to be fixed: 
 - confidence rate: maybe an image classification where the box is empty (no object detected)
-- camera live stream feedon the tkinter
+- camera live stream via the tkinter

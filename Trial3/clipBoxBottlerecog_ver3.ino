@@ -25,8 +25,8 @@
 #define PCLK_GPIO_NUM     22
 
 /* WiFi Configuration */
-const char* WIFI_SSID = "YOUR_WIFI_SSID";      // CHANGE THIS
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASS";  // CHANGE THIS
+const char* WIFI_SSID = "-";      // CHANGE THIS
+const char* WIFI_PASSWORD = "-";  // CHANGE THIS
 
 /* HiveMQ Configuration */
 const char* MQTT_BROKER = "broker.hivemq.com";
@@ -280,6 +280,9 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     connectMQTT();
   }
+
+  pinMode(4, OUTPUT);
+  digitalWrite(4, HIGH);
   
   Serial.println("\nSystem ready!");
   Serial.println("Starting classification loop...");
