@@ -549,12 +549,7 @@ void setup() {
   
   // Flash LED to indicate ready
   pinMode(4, OUTPUT);
-  for(int i = 0; i < 3; i++) {
-    digitalWrite(4, HIGH);
-    delay(200);
-    digitalWrite(4, LOW);
-    delay(200);
-  }
+  digitalWrite(4, HIGH);
   
   Serial.println("\nSystem ready!");
   Serial.println("Access the stream at:");
