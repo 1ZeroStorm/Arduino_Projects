@@ -1,8 +1,6 @@
-/* ESP32-CAM Edge Impulse Classification + Video Streaming + MQTT */
+/* ESP32-CAM Edge Impulse Classification + Video Streaming */
 #include <WiFi.h>
 #include <WebServer.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
 #include "esp_camera.h"
 #include "bottle_and_clipbox_recognition_inferencing.h"
 #include "edge-impulse-sdk/dsp/image/image.hpp"
@@ -29,26 +27,24 @@
 const char* WIFI_SSID = "Aryahiro";      // CHANGE THIS
 const char* WIFI_PASSWORD = "angga1407";  // CHANGE THIS
 
-/* MQTT Configuration */
-const char* MQTT_BROKER = "broker.hivemq.com";
-const int MQTT_PORT = 1883;
-const char* TOPIC_CLASSIFICATION = "esp32/cam/classification";
-const char* TOPIC_STATUS = "esp32/cam/status";
-
 /* Camera Settings */
 #define FRAME_SIZE FRAMESIZE_QVGA  // 320x240
 #define JPEG_QUALITY 10
 #define INFERENCE_INTERVAL 2000  // Run inference every 2 seconds
 
 /* Global Variables */
-WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
 WebServer server(80);
 uint8_t* inferenceBuffer = NULL;
 unsigned long lastInferenceTime = 0;
 String clientID;
 bool streamEnabled = true;
 uint32_t streamDelay = 100; // ms between frames
+
+// Variables to store classification results
+String lastLabel = "none";
+float lastConfidence = 0.0;
+unsigned long lastInferenceTimestamp = 0;
+bool inferenceRunning = false;
 
 /* Generate unique client ID from MAC address */
 String generateClientID() {
@@ -131,34 +127,11 @@ void connectWiFi() {
     Serial.print("Single JPEG: http://");
     Serial.print(WiFi.localIP());
     Serial.println("/jpg");
+    Serial.print("Classification data: http://");
+    Serial.print(WiFi.localIP());
+    Serial.println("/classification");
   } else {
     Serial.println("\nWiFi connection failed!");
-  }
-}
-
-/* Connect to MQTT */
-void connectMQTT() {
-  Serial.print("Connecting to MQTT broker...");
-  
-  clientID = generateClientID();
-  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  
-  int attempts = 0;
-  while (!mqttClient.connected() && attempts < 10) {
-    if (mqttClient.connect(clientID.c_str())) {
-      Serial.println("connected!");
-      
-      // Send connection status
-      String statusMsg = "{\"status\":\"connected\",\"client_id\":\"" + clientID + "\",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
-      mqttClient.publish(TOPIC_STATUS, statusMsg.c_str());
-      
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" retrying...");
-      delay(2000);
-      attempts++;
-    }
   }
 }
 
@@ -170,6 +143,7 @@ void handleRoot() {
 <head>
     <title>ESP32-CAM Stream</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
     <style>
         body { 
             font-family: Arial, sans-serif; 
@@ -212,6 +186,8 @@ void handleRoot() {
             font-size: 16px;
         }
         button:hover { background: #45a049; }
+        button.stop { background: #f44336; }
+        button.stop:hover { background: #d32f2f; }
         #status {
             margin: 20px 0;
             padding: 10px;
@@ -224,10 +200,67 @@ void handleRoot() {
             border-radius: 5px;
             margin: 20px 0;
             text-align: left;
+            border-left: 5px solid #2196F3;
         }
         .classification h3 { margin-top: 0; }
-        .result { font-size: 18px; font-weight: bold; }
-        .confidence { color: #4CAF50; }
+        .result { 
+            font-size: 24px; 
+            font-weight: bold;
+            color: #2196F3;
+            margin: 10px 0;
+            padding: 10px;
+            background: white;
+            border-radius: 5px;
+        }
+        .confidence { 
+            font-size: 18px; 
+            color: #4CAF50;
+            margin: 10px 0;
+        }
+        .timestamp {
+            font-size: 14px;
+            color: #666;
+            font-style: italic;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-connected {
+            background-color: #4CAF50;
+            animation: pulse 2s infinite;
+        }
+        .status-disconnected {
+            background-color: #f44336;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            margin: 20px 0;
+            padding: 15px;
+            background: #f0f7ff;
+            border-radius: 10px;
+        }
+        .stat-item {
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2196F3;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+        }
     </style>
 </head>
 <body>
@@ -235,9 +268,25 @@ void handleRoot() {
         <h1>ESP32-CAM Live Stream with AI Classification</h1>
         
         <div id="status">
-            <p>Streaming from ESP32-CAM</p>
+            <p><span class="status-indicator status-connected"></span>Streaming from ESP32-CAM</p>
             <p>IP: )rawliteral" + WiFi.localIP().toString() + R"rawliteral(</p>
             <p>Client ID: )rawliteral" + clientID + R"rawliteral(</p>
+            <p>Inference runs every 2 seconds</p>
+        </div>
+        
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-value" id="currentFPS">10</div>
+                <div class="stat-label">FPS</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="inferenceTime">0</div>
+                <div class="stat-label">ms</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="confidenceValue">0%</div>
+                <div class="stat-label">Confidence</div>
+            </div>
         </div>
         
         <div class="video-container">
@@ -246,100 +295,185 @@ void handleRoot() {
         
         <div class="classification" id="classification">
             <h3>AI Classification Results</h3>
-            <p id="result">Waiting for classification...</p>
-            <p id="confidence">Confidence: 0%</p>
-            <p id="timestamp">Last update: Never</p>
+            <div class="result" id="result">Waiting for classification...</div>
+            <div class="confidence" id="confidence">Confidence: 0%</div>
+            <div class="timestamp" id="timestamp">Last update: Never</div>
         </div>
         
         <div class="controls">
             <button onclick="location.reload()">Refresh Page</button>
             <button onclick="window.open('/jpg', '_blank')">Capture Still Image</button>
-            <button onclick="toggleStream()">Toggle Stream</button>
+            <button onclick="toggleStream()" id="streamBtn">Stop Stream</button>
+            <button onclick="forceInference()" id="inferenceBtn">Run Inference Now</button>
         </div>
         
         <div>
-            <p>Connection: <span id="connStatus">Connected</span></p>
-            <p>Frame Rate: <input type="range" id="fps" min="1" max="30" value="10" onchange="changeFPS()"> <span id="fpsValue">10</span> FPS</p>
+            <p>Connection: <span id="connStatus">Streaming</span></p>
+            <p>Frame Rate: <input type="range" id="fps" min="1" max="30" value="10" onchange="changeFPS()"> 
+               <span id="fpsValue">10</span> FPS</p>
         </div>
     </div>
 
     <script>
         let streamEnabled = true;
         let currentFPS = 10;
+        let lastClassificationTime = 0;
         
         function toggleStream() {
             streamEnabled = !streamEnabled;
             const img = document.getElementById('stream');
-            const btn = event.target;
+            const btn = document.getElementById('streamBtn');
+            const connStatus = document.getElementById('connStatus');
             
             if (streamEnabled) {
                 img.src = "/stream?fps=" + currentFPS;
                 btn.textContent = "Stop Stream";
-                document.getElementById('connStatus').textContent = "Streaming";
+                btn.classList.remove('stop');
+                connStatus.textContent = "Streaming";
+                connStatus.style.color = "#4CAF50";
             } else {
                 img.src = "";
                 btn.textContent = "Start Stream";
-                document.getElementById('connStatus').textContent = "Paused";
+                btn.classList.add('stop');
+                connStatus.textContent = "Paused";
+                connStatus.style.color = "#f44336";
             }
         }
         
         function changeFPS() {
             const slider = document.getElementById('fps');
             const fpsValue = document.getElementById('fpsValue');
-            currentFPS = slider.value;
+            const currentFPSValue = document.getElementById('currentFPS');
+            currentFPS = parseInt(slider.value);
             fpsValue.textContent = currentFPS;
+            currentFPSValue.textContent = currentFPS;
             
             if (streamEnabled) {
                 document.getElementById('stream').src = "/stream?fps=" + currentFPS;
             }
         }
         
-        // MQTT over WebSocket for classification updates
-        const mqttClient = new Paho.MQTT.Client("broker.hivemq.com", 8000, "webclient_" + Math.random().toString(36).substr(2, 9));
-        
-        mqttClient.onConnectionLost = (responseObject) => {
-            console.log("Connection lost: " + responseObject.errorMessage);
-        };
-        
-        mqttClient.onMessageArrived = (message) => {
-            try {
-                const data = JSON.parse(message.payloadString);
-                if (message.destinationName === "esp32/cam/classification") {
-                    updateClassification(data);
-                }
-            } catch (e) {
-                console.error("Error parsing MQTT message:", e);
-            }
-        };
-        
-        function updateClassification(data) {
-            document.getElementById('result').textContent = "Class: " + data.label;
-            document.getElementById('confidence').textContent = 
-                "Confidence: " + (data.confidence * 100).toFixed(1) + "%";
-            
-            const timestamp = new Date(data.timestamp);
-            document.getElementById('timestamp').textContent = 
-                "Last update: " + timestamp.toLocaleTimeString();
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString();
         }
         
-        // Connect to MQTT
-        mqttClient.connect({
-            onSuccess: () => {
-                console.log("Connected to MQTT");
-                mqttClient.subscribe("esp32/cam/classification");
-            },
-            onFailure: (error) => {
-                console.log("MQTT connection failed:", error.errorMessage);
+        function formatTimeAgo(timestamp) {
+            const now = Date.now();
+            const diff = now - timestamp;
+            
+            if (diff < 60000) {
+                return "Just now";
+            } else if (diff < 3600000) {
+                return Math.floor(diff / 60000) + " minutes ago";
+            } else if (diff < 86400000) {
+                return Math.floor(diff / 3600000) + " hours ago";
+            } else {
+                return Math.floor(diff / 86400000) + " days ago";
             }
-        });
+        }
+        
+        function updateClassificationUI(data) {
+            if (data && data.label && data.label !== "none") {
+                const resultElem = document.getElementById('result');
+                const confidenceElem = document.getElementById('confidence');
+                const timestampElem = document.getElementById('timestamp');
+                const confidenceValueElem = document.getElementById('confidenceValue');
+                
+                const confidencePercent = (data.confidence * 100).toFixed(1);
+                const timeAgo = formatTimeAgo(data.timestamp);
+                
+                resultElem.textContent = "🎯 Detected: " + data.label.toUpperCase();
+                confidenceElem.textContent = "Confidence: " + confidencePercent + "%";
+                timestampElem.textContent = "Last update: " + timeAgo + " (" + formatTime(data.timestamp) + ")";
+                confidenceValueElem.textContent = confidencePercent + "%";
+                
+                // Visual feedback based on confidence
+                if (data.confidence > 0.8) {
+                    resultElem.style.color = "#4CAF50";
+                    resultElem.style.backgroundColor = "#e8f5e9";
+                } else if (data.confidence > 0.6) {
+                    resultElem.style.color = "#FF9800";
+                    resultElem.style.backgroundColor = "#fff3e0";
+                } else {
+                    resultElem.style.color = "#f44336";
+                    resultElem.style.backgroundColor = "#ffebee";
+                }
+                
+                lastClassificationTime = data.timestamp;
+                
+                // Update inference time if available
+                if (data.inference_time) {
+                    document.getElementById('inferenceTime').textContent = data.inference_time;
+                }
+            } else {
+                document.getElementById('result').textContent = "⏳ Waiting for classification...";
+                document.getElementById('result').style.color = "#666";
+                document.getElementById('result').style.backgroundColor = "#f5f5f5";
+            }
+        }
+        
+        function fetchClassification() {
+            fetch('/classification')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('Received classification:', data);
+                    updateClassificationUI(data);
+                })
+                .catch(error => {
+                    console.error('Error fetching classification:', error);
+                    document.getElementById('result').textContent = "⚠️ Error fetching classification data";
+                    document.getElementById('result').style.color = "#f44336";
+                });
+        }
+        
+        function forceInference() {
+            fetch('/force-inference')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Force inference failed');
+                    }
+                    return response.text();
+                })
+                .then(data => {
+                    console.log('Force inference response:', data);
+                    document.getElementById('result').textContent = "🔄 Running inference...";
+                    setTimeout(fetchClassification, 1000);
+                })
+                .catch(error => {
+                    console.error('Error forcing inference:', error);
+                });
+        }
+        
+        // Initial fetch
+        fetchClassification();
+        
+        // Poll for updates every 1 second
+        setInterval(fetchClassification, 1000);
         
         // Auto-refresh stream every 30 seconds to prevent timeout
         setInterval(() => {
             if (streamEnabled) {
                 const img = document.getElementById('stream');
-                img.src = img.src.split('?')[0] + "?t=" + new Date().getTime();
+                // Add timestamp to prevent caching
+                const currentSrc = img.src.split('?')[0];
+                img.src = currentSrc + "?t=" + new Date().getTime() + "&fps=" + currentFPS;
             }
         }, 30000);
+        
+        // Update FPS slider display
+        document.getElementById('fps').addEventListener('input', function() {
+            document.getElementById('fpsValue').textContent = this.value;
+            document.getElementById('currentFPS').textContent = this.value;
+        });
+        
+        // Initialize display
+        document.getElementById('currentFPS').textContent = currentFPS;
     </script>
 </body>
 </html>
@@ -410,38 +544,90 @@ void handleJPG() {
   esp_camera_fb_return(fb);
 }
 
-/* Run Edge Impulse Inference */
+/* Handle classification data request */
+void handleClassification() {
+  String jsonResponse = "{";
+  jsonResponse += "\"client_id\":\"" + clientID + "\",";
+  jsonResponse += "\"label\":\"" + lastLabel + "\",";
+  jsonResponse += "\"confidence\":" + String(lastConfidence, 4) + ",";
+  jsonResponse += "\"timestamp\":" + String(lastInferenceTimestamp);
+  
+  // Add inference time if available
+  if (lastInferenceTimestamp > 0) {
+    jsonResponse += ",\"inference_time\":100"; // Default value
+  }
+  
+  jsonResponse += "}";
+  
+  server.send(200, "application/json", jsonResponse);
+  
+  // Debug output
+  static unsigned long lastDebugTime = 0;
+  if (millis() - lastDebugTime > 5000) { // Only print every 5 seconds
+    lastDebugTime = millis();
+    Serial.print("Served classification data: ");
+    Serial.println(jsonResponse);
+  }
+}
+
+/* Handle force inference request */
+void handleForceInference() {
+  lastInferenceTime = 0; // Reset timer to force immediate inference
+  server.send(200, "text/plain", "Inference will run on next loop");
+  Serial.println("Force inference requested");
+}
+
+/* Run Edge Impulse Inference - Fixed version */
 void runInference() {
   unsigned long now = millis();
   
+  // Check if it's time to run inference
   if (now - lastInferenceTime < INFERENCE_INTERVAL) {
     return;
   }
-  lastInferenceTime = now;
+  
+  // Prevent multiple simultaneous inferences
+  if (inferenceRunning) {
+    return;
+  }
+  
+  inferenceRunning = true;
+  
+  Serial.println("\n=== Starting Inference ===");
   
   // Allocate buffer if needed
   if (!inferenceBuffer) {
+    Serial.println("Allocating inference buffer...");
     inferenceBuffer = (uint8_t*)malloc(320 * 240 * 3);  // QVGA RGB
     if (!inferenceBuffer) {
-      Serial.println("Failed to allocate inference buffer");
+      Serial.println("ERROR: Failed to allocate inference buffer!");
+      inferenceRunning = false;
       return;
     }
+    Serial.println("Inference buffer allocated");
   }
   
   // Capture frame for inference
+  Serial.println("Capturing frame...");
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) {
-    Serial.println("Camera capture failed");
+    Serial.println("ERROR: Camera capture failed for inference");
+    inferenceRunning = false;
     return;
   }
   
+  Serial.printf("Frame captured: %d bytes\n", fb->len);
+  
   // Convert JPEG to RGB888
+  Serial.println("Converting JPEG to RGB...");
   if (!fmt2rgb888(fb->buf, fb->len, PIXFORMAT_JPEG, inferenceBuffer)) {
-    Serial.println("JPEG to RGB conversion failed");
+    Serial.println("ERROR: JPEG to RGB conversion failed");
     esp_camera_fb_return(fb);
+    inferenceRunning = false;
     return;
   }
   esp_camera_fb_return(fb);
+  Serial.println("Conversion successful");
   
   // Prepare signal for Edge Impulse
   ei::signal_t signal;
@@ -462,57 +648,49 @@ void runInference() {
   };
   
   // Run inference
+  Serial.println("Running classifier...");
   ei_impulse_result_t result = {0};
   EI_IMPULSE_ERROR err = run_classifier(&signal, &result, false);
   
   if (err != EI_IMPULSE_OK) {
-    Serial.printf("Inference failed: %d\n", err);
+    Serial.printf("ERROR: Inference failed with code: %d\n", err);
+    inferenceRunning = false;
     return;
   }
   
   // Find best classification
   float bestConfidence = 0;
-  int bestIndex = 0;
   String bestLabel = "unknown";
   
   for (int i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
     if (result.classification[i].value > bestConfidence) {
       bestConfidence = result.classification[i].value;
-      bestIndex = i;
       bestLabel = String(ei_classifier_inferencing_categories[i]);
     }
   }
   
-  // Create JSON message
-  StaticJsonDocument<512> doc;
-  doc["client_id"] = clientID;
-  doc["timestamp"] = now;
-  doc["label"] = bestLabel;
-  doc["confidence"] = bestConfidence;
-  doc["inference_time"] = result.timing.classification;
+  // Update global variables
+  lastLabel = bestLabel;
+  lastConfidence = bestConfidence;
+  lastInferenceTimestamp = millis();
+  lastInferenceTime = now;
   
-  JsonArray probabilities = doc.createNestedArray("probabilities");
-  for (int i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
-    JsonObject prob = probabilities.createNestedObject();
-    prob["label"] = String(ei_classifier_inferencing_categories[i]);
-    prob["value"] = result.classification[i].value;
-  }
+  // Print detailed results to Serial
+  Serial.println("\n=== INFERENCE RESULTS ===");
+  Serial.print("Label: ");
+  Serial.println(bestLabel);
+  Serial.print("Confidence: ");
+  Serial.print(bestConfidence * 100, 1);
+  Serial.println("%");
+  Serial.print("Inference time: ");
+  Serial.print(result.timing.classification);
+  Serial.println(" ms");
+  Serial.print("Timestamp: ");
+  Serial.println(lastInferenceTimestamp);
+  Serial.println("=========================\n");
   
-  String jsonString;
-  serializeJson(doc, jsonString);
   
-  // Send via MQTT
-  if (mqttClient.connected()) {
-    if (mqttClient.publish(TOPIC_CLASSIFICATION, jsonString.c_str())) {
-      Serial.printf("Published: %s (%.1f%%)\n", bestLabel.c_str(), bestConfidence * 100);
-    } else {
-      Serial.println("MQTT publish failed");
-    }
-  }
-  
-  // Also print to Serial for debugging
-  Serial.print("RESULT:");
-  Serial.println(jsonString);
+  inferenceRunning = false;
 }
 
 /* Setup */
@@ -534,21 +712,31 @@ void setup() {
   // Connect to WiFi
   connectWiFi();
   
-  // Connect to MQTT
-  if (WiFi.status() == WL_CONNECTED) {
-    connectMQTT();
-  }
+  // Generate client ID
+  clientID = generateClientID();
   
-  // Setup web server
+  // Setup web server routes
   server.on("/", handleRoot);
   server.on("/stream", handleStream);
   server.on("/jpg", handleJPG);
+  server.on("/classification", handleClassification);
+  server.on("/force-inference", handleForceInference);
   server.begin();
   
   Serial.println("HTTP server started");
   
-  // Flash LED to indicate ready
+  // Setup LED pin (GPIO 4 for ESP32-CAM)
   pinMode(4, OUTPUT);
+  
+  // Make LED pink on startup (blink pattern)
+  for(int i = 0; i < 3; i++) {
+    digitalWrite(4, HIGH);
+    delay(100);
+    digitalWrite(4, LOW);
+    delay(100);
+  }
+  
+  // Keep LED on (pink) after startup
   digitalWrite(4, HIGH);
   
   Serial.println("\nSystem ready!");
@@ -563,25 +751,23 @@ void loop() {
   // Handle web clients
   server.handleClient();
   
-  // Maintain MQTT connection
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!mqttClient.connected()) {
-      connectMQTT();
-    }
-    mqttClient.loop();
-  } else {
-    // Try to reconnect WiFi
+  // Check WiFi connection
+  if (WiFi.status() != WL_CONNECTED) {
     static unsigned long lastWiFiReconnect = 0;
     if (millis() - lastWiFiReconnect > 10000) {
       lastWiFiReconnect = millis();
       Serial.println("Reconnecting WiFi...");
-      connectWiFi();
+      WiFi.reconnect();
+      delay(1000);
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("WiFi reconnected!");
+      }
     }
   }
   
   // Run inference
   runInference();
   
-  // Small delay
+  // Small delay to prevent watchdog timer issues
   delay(10);
 }

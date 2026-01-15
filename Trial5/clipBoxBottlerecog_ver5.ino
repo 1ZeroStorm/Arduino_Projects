@@ -33,17 +33,12 @@ const char* MQTT_BROKER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
 const char* TOPIC_CLASSIFICATION = "esp32/cam/classification";
 const char* TOPIC_STATUS = "esp32/cam/status";
-const char* TOPIC_VIDEO_STREAM = "esp32/cam/video";  // Optional: for sending frames via MQTT
 
 /* Camera Settings */
 #define FRAME_SIZE FRAMESIZE_QVGA  // 320x240
 #define JPEG_QUALITY 10
 #define INFERENCE_INTERVAL 2000    // Run inference every 2 seconds
-#define PUBLISH_INTERVAL 100       // Publish status every 100ms
-
-/* Optional Video Streaming via MQTT */
-//#define ENABLE_MQTT_VIDEO_STREAM  // Uncomment to send video frames via MQTT
-#define MAX_JPEG_SIZE 5000  // Max bytes per JPEG frame for MQTT
+#define PUBLISH_INTERVAL 1000      // Publish status every 1 second (changed from 100ms)
 
 /* Global Variables */
 WiFiClient wifiClient;
@@ -52,9 +47,16 @@ uint8_t* inferenceBuffer = NULL;
 unsigned long lastInferenceTime = 0;
 unsigned long lastStatusTime = 0;
 String clientID;
-bool isStreaming = false;
-int streamFPS = 10;
-unsigned long lastFrameTime = 0;
+
+/* Function Declarations (Forward Declarations) */
+String generateClientID();
+bool initCamera();
+void connectWiFi();
+void connectMQTT();
+void sendStatusMessage(String status, String ip = "");
+void runInference();
+void publishStatus();
+void processMQTTCommands();
 
 /* Generate unique client ID from MAC address */
 String generateClientID() {
@@ -136,6 +138,22 @@ void connectWiFi() {
   }
 }
 
+/* Send status message */
+void sendStatusMessage(String status, String ip) {
+  StaticJsonDocument<256> doc;
+  doc["client_id"] = clientID;
+  doc["status"] = status;
+  doc["ip"] = ip;
+  doc["timestamp"] = millis();
+  
+  String jsonString;
+  serializeJson(doc, jsonString);
+  
+  if (mqttClient.connected()) {
+    mqttClient.publish(TOPIC_STATUS, jsonString.c_str());
+  }
+}
+
 /* Connect to MQTT */
 void connectMQTT() {
   Serial.print("Connecting to MQTT broker...");
@@ -160,92 +178,6 @@ void connectMQTT() {
     }
   }
 }
-
-/* Send status message */
-void sendStatusMessage(String status, String ip = "") {
-  StaticJsonDocument<256> doc;
-  doc["client_id"] = clientID;
-  doc["status"] = status;
-  doc["ip"] = ip;
-  doc["timestamp"] = millis();
-  doc["streaming"] = isStreaming;
-  doc["fps"] = streamFPS;
-  
-  String jsonString;
-  serializeJson(doc, jsonString);
-  
-  if (mqttClient.connected()) {
-    mqttClient.publish(TOPIC_STATUS, jsonString.c_str());
-  }
-}
-
-/* Send video frame via MQTT (optional) */
-#ifdef ENABLE_MQTT_VIDEO_STREAM
-void sendVideoFrame() {
-  unsigned long now = millis();
-  unsigned long frameInterval = 1000 / streamFPS;
-  
-  if (now - lastFrameTime < frameInterval) {
-    return;
-  }
-  lastFrameTime = now;
-  
-  // Capture frame
-  camera_fb_t* fb = esp_camera_fb_get();
-  if (!fb) {
-    return;
-  }
-  
-  // Limit frame size
-  size_t frameSize = fb->len;
-  if (frameSize > MAX_JPEG_SIZE) {
-    // Too big, skip this frame
-    esp_camera_fb_return(fb);
-    return;
-  }
-  
-  // Create JSON with base64 encoded image
-  StaticJsonDocument<MAX_JPEG_SIZE * 2> doc;
-  doc["client_id"] = clientID;
-  doc["timestamp"] = now;
-  doc["frame_id"] = now;
-  doc["width"] = fb->width;
-  doc["height"] = fb->height;
-  
-  // Convert to base64
-  String base64Image = "";
-  char buffer[4];
-  for (size_t i = 0; i < frameSize; i++) {
-    uint8_t c = fb->buf[i];
-    buffer[0] = (c & 0xfc) >> 2;
-    buffer[1] = ((c & 0x03) << 4) | ((i+1 < frameSize ? fb->buf[i+1] : 0) >> 4);
-    buffer[2] = ((i+1 < frameSize ? fb->buf[i+1] : 0) << 2) | ((i+2 < frameSize ? fb->buf[i+2] : 0) >> 6);
-    buffer[3] = (i+2 < frameSize ? fb->buf[i+2] : 0) & 0x3f;
-    
-    for (int j = 0; j < 4; j++) {
-      if (buffer[j] < 26) base64Image += (char)(buffer[j] + 'A');
-      else if (buffer[j] < 52) base64Image += (char)(buffer[j] - 26 + 'a');
-      else if (buffer[j] < 62) base64Image += (char)(buffer[j] - 52 + '0');
-      else if (buffer[j] == 62) base64Image += '+';
-      else base64Image += '/';
-    }
-    
-    i += 2;
-  }
-  
-  doc["image"] = base64Image;
-  
-  String jsonString;
-  serializeJson(doc, jsonString);
-  
-  // Send via MQTT
-  if (mqttClient.connected()) {
-    mqttClient.publish(TOPIC_VIDEO_STREAM, jsonString.c_str());
-  }
-  
-  esp_camera_fb_return(fb);
-}
-#endif
 
 /* Process MQTT commands */
 void processMQTTCommands() {
@@ -408,6 +340,7 @@ void setup() {
     digitalWrite(4, LOW);
     delay(200);
   }
+  digitalWrite(4, HIGH);
   
   Serial.println("\nSystem ready!");
   Serial.println("Starting classification loop...");
@@ -428,13 +361,6 @@ void loop() {
     
     // Publish periodic status
     publishStatus();
-    
-    // Optional: Send video frames via MQTT
-    #ifdef ENABLE_MQTT_VIDEO_STREAM
-    if (isStreaming) {
-      sendVideoFrame();
-    }
-    #endif
     
   } else {
     // Try to reconnect WiFi

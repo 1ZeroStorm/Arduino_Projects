@@ -1,332 +1,249 @@
 """
-Simple ESP32-CAM Web Viewer
-Run with: python simple_viewer.py
+Simple ESP32-CAM Viewer (No matplotlib required)
 """
 
-from flask import Flask, render_template, Response, jsonify, request
-import cv2
-import numpy as np
-import threading
-import time
-import json
-import base64
-import queue
+import tkinter as tk
+from tkinter import ttk, scrolledtext
 import paho.mqtt.client as mqtt
-import requests
+import json
 from datetime import datetime
+import threading
 
-app = Flask(__name__)
-
-# Configuration
-ESP32_IP = "192.168.100.4"  # Change to your ESP32 IP
-STREAM_URL = f"http://{ESP32_IP}/stream"
-MQTT_BROKER = "broker.hivemq.com"
-MQTT_PORT = 1883
-
-# Global state
-latest_frame = None
-latest_classification = None
-mqtt_connected = False
-streaming = True
-frame_queue = queue.Queue(maxsize=10)
-
-class MQTTManager:
-    def __init__(self):
-        self.client = mqtt.Client()
-        self.client.on_connect = self.on_connect
-        self.client.on_message = self.on_message
-        self.connect()
+class SimpleViewer:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("ESP32-CAM Viewer")
+        self.root.geometry("900x700")
         
+        # Colors for confidence levels
+        self.colors = {
+            'high': '#2ecc71',    # Green
+            'medium': '#f39c12',  # Orange
+            'low': '#e74c3c'      # Red
+        }
+        
+        # MQTT
+        self.mqtt_broker = "broker.hivemq.com"
+        self.mqtt_port = 1883
+        self.topic = "esp32/cam/classification"
+        
+        # Setup UI
+        self.setup_ui()
+        
+        # Connect to MQTT
+        self.connect_mqtt()
+        
+    def setup_ui(self):
+        # Configure style
+        style = ttk.Style()
+        style.configure('Title.TLabel', font=('Helvetica', 18, 'bold'))
+        style.configure('Result.TLabel', font=('Helvetica', 24, 'bold'))
+        style.configure('Confidence.Horizontal.TProgressbar', 
+                       background=self.colors['medium'])
+        
+        # Create main container
+        main_container = ttk.Frame(self.root, padding="20")
+        main_container.pack(fill=tk.BOTH, expand=True)
+        
+        # Header
+        header_frame = ttk.Frame(main_container)
+        header_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        ttk.Label(header_frame, text="ESP32-CAM AI Classification", 
+                 style='Title.TLabel').pack(side=tk.LEFT)
+        
+        self.status_label = ttk.Label(header_frame, text="● Disconnected", 
+                                     foreground="red")
+        self.status_label.pack(side=tk.RIGHT, padx=10)
+        
+        # Main content in two columns
+        content_frame = ttk.Frame(main_container)
+        content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Left column - Current result
+        left_frame = ttk.Frame(content_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        # Result card
+        result_card = ttk.LabelFrame(left_frame, text="Current Detection", padding="25")
+        result_card.pack(fill=tk.BOTH, expand=True)
+        
+        self.result_label = ttk.Label(result_card, text="WAITING FOR DATA", 
+                                     style='Result.TLabel', foreground="gray")
+        self.result_label.pack(pady=30)
+        
+        # Confidence
+        confidence_frame = ttk.Frame(result_card)
+        confidence_frame.pack(fill=tk.X, pady=20)
+        
+        ttk.Label(confidence_frame, text="Confidence:").pack(side=tk.LEFT)
+        
+        self.confidence_bar = ttk.Progressbar(confidence_frame, 
+                                            style='Confidence.Horizontal.TProgressbar',
+                                            length=300)
+        self.confidence_bar.pack(side=tk.LEFT, padx=10, expand=True, fill=tk.X)
+        
+        self.confidence_text = ttk.Label(confidence_frame, text="0%", 
+                                        font=('Helvetica', 14))
+        self.confidence_text.pack(side=tk.RIGHT)
+        
+        # Inference info
+        info_frame = ttk.Frame(result_card)
+        info_frame.pack(fill=tk.X, pady=10)
+        
+        self.time_label = ttk.Label(info_frame, text="Inference time: -- ms")
+        self.time_label.pack(side=tk.LEFT)
+        
+        self.timestamp_label = ttk.Label(info_frame, text="Last update: --")
+        self.timestamp_label.pack(side=tk.RIGHT)
+        
+        # Right column - History and details
+        right_frame = ttk.Frame(content_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # History card
+        history_card = ttk.LabelFrame(right_frame, text="Recent Detections", padding="15")
+        history_card.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # Create treeview for history
+        columns = ('Time', 'Label', 'Confidence')
+        self.history_tree = ttk.Treeview(history_card, columns=columns, 
+                                        show='headings', height=8)
+        
+        for col in columns:
+            self.history_tree.heading(col, text=col)
+            self.history_tree.column(col, width=100)
+        
+        self.history_tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbar for treeview
+        scrollbar = ttk.Scrollbar(history_card, orient="vertical", 
+                                 command=self.history_tree.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.history_tree.configure(yscrollcommand=scrollbar.set)
+        
+        # Details card
+        details_card = ttk.LabelFrame(right_frame, text="Detection Details", padding="15")
+        details_card.pack(fill=tk.BOTH, expand=True)
+        
+        # Create text widget for probabilities
+        self.details_text = scrolledtext.ScrolledText(details_card, height=10, 
+                                                     state='disabled')
+        self.details_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Log card at bottom
+        log_card = ttk.LabelFrame(main_container, text="System Log", padding="10")
+        log_card.pack(fill=tk.X, pady=(20, 0))
+        
+        self.log_text = scrolledtext.ScrolledText(log_card, height=4, state='disabled')
+        self.log_text.pack(fill=tk.BOTH)
+        
+    def connect_mqtt(self):
+        self.log("Connecting to MQTT broker...")
+        
+        self.mqtt_client = mqtt.Client()
+        self.mqtt_client.on_connect = self.on_connect
+        self.mqtt_client.on_message = self.on_message
+        
+        # Start in background thread
+        thread = threading.Thread(target=self.mqtt_thread, daemon=True)
+        thread.start()
+        
+    def mqtt_thread(self):
+        try:
+            self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, 60)
+            self.mqtt_client.loop_forever()
+        except Exception as e:
+            self.root.after(0, self.log, f"MQTT error: {str(e)}")
+            
     def on_connect(self, client, userdata, flags, rc):
-        global mqtt_connected
-        mqtt_connected = (rc == 0)
         if rc == 0:
-            print("Connected to MQTT broker")
-            client.subscribe("esp32/cam/classification")
-            client.subscribe("esp32/cam/status")
+            self.root.after(0, self.update_status, True)
+            client.subscribe(self.topic)
+            self.root.after(0, self.log, "Connected to MQTT broker")
+        else:
+            self.root.after(0, self.update_status, False)
+            self.root.after(0, self.log, f"Connection failed with code {rc}")
             
     def on_message(self, client, userdata, msg):
-        global latest_classification
-        if msg.topic == "esp32/cam/classification":
-            latest_classification = json.loads(msg.payload.decode())
-            print(f"Classification: {latest_classification.get('label')}")
-            
-    def connect(self):
-        self.client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        self.client.loop_start()
-
-def video_stream_worker():
-    """Background thread for video streaming"""
-    global latest_frame, streaming
-    
-    while True:
-        if not streaming:
-            time.sleep(1)
-            continue
-            
         try:
-            stream = requests.get(STREAM_URL, stream=True, timeout=5)
-            bytes_data = bytes()
+            data = json.loads(msg.payload.decode())
+            self.root.after(0, self.update_display, data)
+        except Exception as e:
+            self.root.after(0, self.log, f"Error processing message: {str(e)}")
             
-            for chunk in stream.iter_content(chunk_size=1024):
-                if not streaming:
-                    break
-                    
-                bytes_data += chunk
-                a = bytes_data.find(b'\xff\xd8')
-                b = bytes_data.find(b'\xff\xd9')
-                
-                if a != -1 and b != -1:
-                    jpg = bytes_data[a:b+2]
-                    bytes_data = bytes_data[b+2:]
-                    
-                    try:
-                        img_array = np.frombuffer(jpg, dtype=np.uint8)
-                        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                        
-                        if img is not None:
-                            latest_frame = img
-                            if not frame_queue.full():
-                                frame_queue.put(img)
-                                
-                    except:
-                        pass
-                        
-        except:
-            time.sleep(2)
-
-@app.route('/')
-def index():
-    """Main page"""
-    return '''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>ESP32-CAM Viewer</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; background: #f0f0f0; }
-            .container { max-width: 1200px; margin: 0 auto; }
-            .header { background: #333; color: white; padding: 20px; border-radius: 10px; }
-            .content { display: flex; gap: 20px; margin-top: 20px; }
-            .video-panel { flex: 2; background: white; padding: 20px; border-radius: 10px; }
-            .info-panel { flex: 1; background: white; padding: 20px; border-radius: 10px; }
-            #videoStream { width: 100%; max-width: 800px; border: 2px solid #333; }
-            .controls { margin: 20px 0; }
-            button { padding: 10px 20px; margin: 5px; background: #4CAF50; color: white; border: none; cursor: pointer; }
-            .classification { background: #e8f5e9; padding: 15px; border-radius: 5px; margin: 10px 0; }
-            .prob-bar { height: 20px; background: #ddd; margin: 5px 0; border-radius: 10px; overflow: hidden; }
-            .prob-fill { height: 100%; background: #4CAF50; }
-            .status { padding: 10px; margin: 5px 0; border-radius: 5px; }
-            .connected { background: #d4edda; }
-            .disconnected { background: #f8d7da; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>ESP32-CAM Live Stream</h1>
-                <p>Real-time video streaming with AI classification</p>
-            </div>
+    def update_status(self, connected):
+        if connected:
+            self.status_label.config(text="● Connected", foreground="green")
+        else:
+            self.status_label.config(text="● Disconnected", foreground="red")
             
-            <div class="content">
-                <div class="video-panel">
-                    <h2>Live Feed</h2>
-                    <img id="videoStream" src="/video_feed" alt="Live Stream">
-                    
-                    <div class="controls">
-                        <button onclick="toggleStream()">Toggle Stream</button>
-                        <button onclick="captureFrame()">Capture Frame</button>
-                        <button onclick="location.reload()">Refresh</button>
-                    </div>
-                </div>
-                
-                <div class="info-panel">
-                    <h2>Classification Results</h2>
-                    <div id="classificationResult">Waiting for data...</div>
-                    <div id="probabilities"></div>
-                    
-                    <h2>System Status</h2>
-                    <div id="statusDisplay">
-                        <div class="status" id="mqttStatus">MQTT: Disconnected</div>
-                        <div class="status" id="streamStatus">Stream: Stopped</div>
-                        <div id="clientId">Client: --</div>
-                    </div>
-                    
-                    <h2>Log</h2>
-                    <div id="log" style="height: 200px; overflow-y: auto; background: #f8f9fa; padding: 10px; font-size: 12px;"></div>
-                </div>
-            </div>
-        </div>
+    def update_display(self, data):
+        # Extract data
+        label = data.get('label', 'Unknown')
+        confidence = data.get('confidence', 0) * 100
+        inference_time = data.get('inference_time', 0)
+        timestamp = data.get('timestamp', 0)
         
-        <script>
-            let lastUpdate = Date.now();
-            
-            // Update video stream
-            function updateStream() {
-                const img = document.getElementById('videoStream');
-                img.src = '/video_feed?t=' + Date.now();
-            }
-            
-            // Update classification
-            function updateClassification() {
-                fetch('/api/classification')
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.label) {
-                            const resultDiv = document.getElementById('classificationResult');
-                            const confidence = (data.confidence * 100).toFixed(1);
-                            resultDiv.innerHTML = `
-                                <div class="classification">
-                                    <h3>${data.label}</h3>
-                                    <p>Confidence: ${confidence}%</p>
-                                    <p>Time: ${new Date(data.timestamp).toLocaleTimeString()}</p>
-                                </div>
-                            `;
-                            
-                            // Update probabilities
-                            if (data.probabilities) {
-                                const probDiv = document.getElementById('probabilities');
-                                probDiv.innerHTML = '<h4>Probabilities:</h4>';
-                                data.probabilities.forEach(prob => {
-                                    const value = (prob.value * 100).toFixed(1);
-                                    probDiv.innerHTML += `
-                                        <div>
-                                            <span>${prob.label}: </span>
-                                            <div class="prob-bar">
-                                                <div class="prob-fill" style="width: ${value}%"></div>
-                                            </div>
-                                            <span>${value}%</span>
-                                        </div>
-                                    `;
-                                });
-                            }
-                            
-                            // Update log
-                            addLog(`Classification: ${data.label} (${confidence}%)`);
-                        }
-                    });
-            }
-            
-            // Update status
-            function updateStatus() {
-                fetch('/api/status')
-                    .then(response => response.json())
-                    .then(data => {
-                        const mqttDiv = document.getElementById('mqttStatus');
-                        const streamDiv = document.getElementById('streamStatus');
-                        
-                        mqttDiv.textContent = `MQTT: ${data.mqtt_connected ? 'Connected' : 'Disconnected'}`;
-                        mqttDiv.className = `status ${data.mqtt_connected ? 'connected' : 'disconnected'}`;
-                        
-                        streamDiv.textContent = `Stream: ${data.streaming ? 'Active' : 'Stopped'}`;
-                        streamDiv.className = `status ${data.streaming ? 'connected' : 'disconnected'}`;
-                        
-                        if (data.client_id) {
-                            document.getElementById('clientId').textContent = `Client: ${data.client_id}`;
-                        }
-                    });
-            }
-            
-            // Toggle stream
-            function toggleStream() {
-                fetch('/control/toggle', {method: 'POST'})
-                    .then(() => {
-                        updateStatus();
-                        addLog('Stream toggled');
-                    });
-            }
-            
-            // Capture frame
-            function captureFrame() {
-                fetch('/capture', {method: 'POST'})
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.filename) {
-                            addLog(`Captured: ${data.filename}`);
-                        }
-                    });
-            }
-            
-            // Add log entry
-            function addLog(message) {
-                const logDiv = document.getElementById('log');
-                const timestamp = new Date().toLocaleTimeString();
-                logDiv.innerHTML = `[${timestamp}] ${message}<br>` + logDiv.innerHTML;
-            }
-            
-            // Auto-refresh
-            setInterval(updateStream, 100);
-            setInterval(updateClassification, 1000);
-            setInterval(updateStatus, 2000);
-            
-            // Initial update
-            updateStatus();
-            updateClassification();
-            addLog('System started');
-        </script>
-    </body>
-    </html>
-    '''
+        # Update main result
+        self.result_label.config(text=label.upper())
+        
+        # Update confidence bar
+        self.confidence_bar['value'] = confidence
+        self.confidence_text.config(text=f"{confidence:.1f}%")
+        
+        # Update confidence bar color
+        if confidence > 70:
+            color = self.colors['high']
+        elif confidence > 50:
+            color = self.colors['medium']
+        else:
+            color = self.colors['low']
+        
+        # Update inference info
+        self.time_label.config(text=f"Inference time: {inference_time:.0f} ms")
+        
+        # Convert timestamp to readable time
+        if timestamp:
+            dt = datetime.fromtimestamp(timestamp / 1000)
+            time_str = dt.strftime("%H:%M:%S")
+            self.timestamp_label.config(text=f"Last update: {time_str}")
+        
+        # Add to history
+        current_time = datetime.now().strftime("%H:%M:%S")
+        self.history_tree.insert('', 0, values=(current_time, label, f"{confidence:.1f}%"))
+        
+        # Keep only last 10 entries
+        if len(self.history_tree.get_children()) > 10:
+            self.history_tree.delete(self.history_tree.get_children()[-1])
+        
+        # Update details
+        self.details_text.configure(state='normal')
+        self.details_text.delete(1.0, tk.END)
+        
+        if 'probabilities' in data:
+            self.details_text.insert(tk.END, "Probability Distribution:\n\n")
+            for prob in data['probabilities']:
+                value = prob['value'] * 100
+                self.details_text.insert(tk.END, 
+                                       f"  {prob['label']}: {value:.1f}%\n")
+        
+        self.details_text.configure(state='disabled')
+        
+        # Log
+        self.log(f"Detected: {label} ({confidence:.1f}%)")
+        
+    def log(self, message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.configure(state='normal')
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.log_text.see(tk.END)
+        self.log_text.configure(state='disabled')
+        
+    def run(self):
+        self.root.mainloop()
 
-@app.route('/video_feed')
-def video_feed():
-    """MJPEG video stream"""
-    def generate():
-        while True:
-            if latest_frame is not None:
-                # Convert to JPEG
-                _, buffer = cv2.imencode('.jpg', latest_frame)
-                frame = buffer.tobytes()
-                
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            time.sleep(0.1)
-    
-    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-@app.route('/api/classification')
-def get_classification():
-    if latest_classification:
-        return jsonify(latest_classification)
-    return jsonify({'label': 'No data', 'confidence': 0})
-
-@app.route('/api/status')
-def get_status():
-    return jsonify({
-        'mqtt_connected': mqtt_connected,
-        'streaming': streaming,
-        'client_id': latest_classification.get('client_id', 'Unknown') if latest_classification else 'Unknown'
-    })
-
-@app.route('/control/toggle', methods=['POST'])
-def toggle_stream():
-    global streaming
-    streaming = not streaming
-    return jsonify({'streaming': streaming})
-
-@app.route('/capture', methods=['POST'])
-def capture():
-    """Capture and save a frame"""
-    if latest_frame is not None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"capture_{timestamp}.jpg"
-        cv2.imwrite(filename, latest_frame)
-        return jsonify({'filename': filename})
-    return jsonify({'error': 'No frame available'}), 400
-
-if __name__ == '__main__':
-    # Start MQTT
-    mqtt_manager = MQTTManager()
-    
-    # Start video stream thread
-    stream_thread = threading.Thread(target=video_stream_worker)
-    stream_thread.daemon = True
-    stream_thread.start()
-    
-    print(f"\nESP32-CAM Web Viewer")
-    print(f"=====================")
-    print(f"Open in browser: http://localhost:5000")
-    print(f"ESP32 IP: {ESP32_IP}")
-    print(f"=====================\n")
-    
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SimpleViewer(root)
+    app.run()
