@@ -4,10 +4,16 @@ using namespace std;
 
 int main(){
     double a;
-    double b = 4;
-    double c = 3;
+    double b;
+    double c;
 
-    a = sqrt(c*c + b*b);
+    cout << "get first number: ";
+    cin >> c;
+
+    cout << "get second number: ";
+    cin >> b;
+
+    a = sqrt(pow(b, 2) + pow(c, 2));
     cout << a;
     
     
