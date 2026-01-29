@@ -17,7 +17,7 @@ void resort(int unsorted[], int currentIndex, int current){
 int main(){
     
     
-    int unsorted[] = {10,1,9,2,8,3,7,4,6,5}; 
+    int unsorted[] = {10,2,9,1,8,3,7,5,6,4, 11, 13,12, 15,14}; 
     int size = sizeof(unsorted) / sizeof(int);
     int temp;
     int current; // 10

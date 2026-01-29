@@ -1,0 +1,21 @@
+#include <iostream>
+
+void sort(int array[], int size);
+
+int main(){
+    int array[] = {1, 2,3,4,5,6,7,8,9,10};
+    int size = sizeof(array) / sizeof(int);
+
+    sort(array, size);
+    std::cout << "Sorted array: ";
+    for (int element : array) {
+        std::cout << element << " ";
+    }
+    
+    return 0;
+}
+
+void sort(int array[], int size){
+    
+
+}
