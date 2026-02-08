@@ -232,13 +232,13 @@ void loop() {
         String encryptedString = encryptImage(fb);
 
         // Publish to HiveMQ
-        bool success = client.publish(mqtt_topic, imageAsString.c_str());
+        bool success = client.publish(mqtt_topic, encryptedString.c_str());
         if(success) Serial.println("Published successfully!");
         else Serial.println("Publish failed - String might be too big");
 
         // Return the frame buffer
         esp_camera_fb_return(fb); // clean up memory
-        Serial.printf("\n================ ended encryption attempt %d =====================\n", i+1);
+        Serial.printf("\n================ ended encryption =====================\n");
     }
     
     delay(1000);
