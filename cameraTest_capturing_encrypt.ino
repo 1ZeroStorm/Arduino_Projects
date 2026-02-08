@@ -1,5 +1,6 @@
 // camera_test_working.ino
 #include "esp_camera.h"
+#include "base64.h" // Required for string conversion
 
 // AI Thinker ESP32-CAM pin definitions (most common)
 #define PWDN_GPIO_NUM     32
