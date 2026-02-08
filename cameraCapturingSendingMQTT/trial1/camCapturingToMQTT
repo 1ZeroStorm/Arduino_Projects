@@ -12,6 +12,7 @@
 #include "base64.h" // Required for string conversion
 #include <WiFi.h> // wifi to connect the MQTT server
 #include <PubSubClient.h> // lib to send the data to MQTT
+#include "mbedtls/aes.h"
 
 // AI Thinker ESP32-CAM pin definitions (most common)
 #define PWDN_GPIO_NUM     32
@@ -35,6 +36,7 @@
 const char* ssid = "Aryahiro";
 const char* password = "angga1407";
 const char* mqtt_server = "broker.hivemq.com"; // From HiveMQ panel
+const char* mqtt_topic = "esp32/camera/images";
 const int mqtt_port = 1883; // 8883 for SSL, but start with 1883 for testing
 
 // MQTT CONFIG
@@ -67,7 +69,48 @@ void reconnect() {
   }
 }
 
+// function to encrypt the base64
+// This must match your Python script exactly!
+unsigned char key[16] = {'m','y','s','u','p','e','r','s','e','c','r','e','t','k','e','y'};
+unsigned char iv[16]  = {'1','2','3','4','5','6','7','8','9','0','1','2','3','4','5','6'};
 
+// Function to encrypt the image
+String encryptImage(camera_fb_t * fb) {
+    // 1. AES works in 16-byte blocks. We must calculate the padded size.
+    // If image is 10,001 bytes, we need to make it 10,016.
+    size_t original_len = fb->len;
+    size_t padded_len = ((original_len / 16) + 1) * 16;
+    unsigned char * padded_buf = (unsigned char *)malloc(padded_len);
+    
+    // Fill the buffer with 'padding' (Standard PKCS7 style)
+    uint8_t padding_value = padded_len - original_len;
+    memset(padded_buf, padding_value, padded_len);
+    memcpy(padded_buf, fb->buf, original_len);
+
+    // 2. Prepare the Output Buffer
+    unsigned char * encrypted_output = (unsigned char *)malloc(padded_len);
+
+    // 3. Run the AES-CBC Scrambler
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    mbedtls_aes_setkey_enc(&aes, key, 128); // 128-bit = 16 byte key
+    
+    // We need a local copy of IV because mbedtls modifies it during encryption
+    unsigned char local_iv[16];
+    memcpy(local_iv, iv, 16);
+
+    mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, padded_len, local_iv, padded_buf, encrypted_output);
+
+    // 4. Base64 encode the SCRAMBLED data
+    String base64Result = base64::encode(encrypted_output, padded_len);
+
+    // 5. Cleanup memory (Very important!)
+    free(padded_buf);
+    free(encrypted_output);
+    mbedtls_aes_free(&aes);
+
+    return base64Result;
+}
 
 //  MAIN SETUP
 void setup() {
@@ -185,14 +228,11 @@ void loop() {
                     fb->width, fb->height, fb->len);
         Serial.printf("  Format: %d\n", fb->format);
 
-        // Convert the binary buffer (fb->buf) into a Base64 String
-        String imageAsString = base64::encode(fb->buf, fb->len);
-        Serial.println("Image converted to string!");
-        Serial.print("First 30 characters of string: ");
-        Serial.println(imageAsString.substring(0, 30));
+        // Now we get an ENCRYPTED string (AES encription and base64)
+        String encryptedString = encryptImage(fb);
 
         // Publish to HiveMQ
-        bool success = client.publish("esp32/camera/images", imageAsString.c_str());
+        bool success = client.publish(mqtt_topic, imageAsString.c_str());
         if(success) Serial.println("Published successfully!");
         else Serial.println("Publish failed - String might be too big");
 
