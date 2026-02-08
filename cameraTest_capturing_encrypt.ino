@@ -110,7 +110,7 @@ void setup() {
   Serial.println("Camera initialized successfully!");
   
   // Get sensor info (updated for new ESP32 core)
-  sensor_t *s = esp_camera_sensor_get();
+  
   Serial.println("\nCamera Sensor Info:");
   Serial.printf("  PID: 0x%04X\n", s->id.PID);
   // manufacturer field might not exist in newer cores
@@ -138,7 +138,7 @@ void setup() {
 
         // Return the frame buffer
         esp_camera_fb_return(fb); // clean up memory
-        Serial.printf("\n================ ended encryption attempt %d =====================\n", i+1)
+        Serial.printf("\n================ ended encryption attempt %d =====================\n", i+1);
     }
     
     delay(1000);
