@@ -90,20 +90,22 @@ bool initCamera() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_QVGA; // QVGA framesize (320 x 240) to match EI input
   
   if(psramFound()) {
     Serial.printf("PSRAM found, using higher quality settings\n");
-    config.frame_size = FRAMESIZE_QVGA;
+    
     config.jpeg_quality = JPEG_QUALITY;
     config.fb_count = 2;
     config.fb_location = CAMERA_FB_IN_PSRAM;
   } else {
     Serial.printf("PSRAM not found, using lower quality settings\n");
-    config.frame_size = FRAMESIZE_SVGA;
+   
     config.jpeg_quality = 12;
     config.fb_count = 1;
   }
   
+  // getting the lastest picture from the camera
   config.grab_mode = CAMERA_GRAB_LATEST;
   
   esp_err_t err = esp_camera_init(&config);
@@ -199,7 +201,7 @@ void runInference() {
   
   // Allocate buffer if needed
   if (!inferenceBuffer) {
-    inferenceBuffer = (uint8_t*)malloc(320 * 240 * 3);  // QVGA RGB
+    inferenceBuffer = (uint8_t*)malloc(320 * 240 * 3);  // QVGA RGB - matching the frame size in camera config, the '3' is like [255, 0, 0]
     if (!inferenceBuffer) {
       Serial.println("Failed to allocate inference buffer");
       return;

@@ -10,4 +10,5 @@
 - run the python file '''python f:/github/Arduino_Projects/cameraCapturingSendingMQTT/trial1/pythonReceiver.py''''
 
 # next progress
-- try the same but with esp shield
+- &#10006; <!-- (done) --> try the same but with esp shield
+- &#10004; <!-- (not done) --> reverse engineer cam edge impulse recog (imageRecogStudy.ino)
