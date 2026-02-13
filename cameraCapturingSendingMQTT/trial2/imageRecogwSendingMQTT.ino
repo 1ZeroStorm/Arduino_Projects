@@ -6,6 +6,13 @@
 #include "bottle_and_clipbox_recognition_inferencing.h"
 #include "edge-impulse-sdk/dsp/image/image.hpp"
 
+#include "base64.h"
+#include "mbedtls/aes.h"
+
+// AES KEYS
+unsigned char key[16] = {'m','y','s','u','p','e','r','s','e','c','r','e','t','k','e','y'};
+unsigned char iv[16]  = {'1','2','3','4','5','6','7','8','9','0','1','2','3','4','5','6'};
+
 /* Camera Configuration */
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -65,6 +72,45 @@ String generateClientID() {
   snprintf(clientID, sizeof(clientID), "esp32-%08X", (uint32_t)chipid);
   return String(clientID);
 }
+
+// image encryption
+String encryptImage(camera_fb_t * fb) {
+    // 1. AES works in 16-byte blocks. We must calculate the padded size.
+    // If image is 10,001 bytes, we need to make it 10,016.
+    size_t original_len = fb->len;
+    size_t padded_len = ((original_len / 16) + 1) * 16;
+    unsigned char * padded_buf = (unsigned char *)malloc(padded_len);
+    
+    // Fill the buffer with 'padding' (Standard PKCS7 style)
+    uint8_t padding_value = padded_len - original_len;
+    memset(padded_buf, padding_value, padded_len);
+    memcpy(padded_buf, fb->buf, original_len);
+
+    // 2. Prepare the Output Buffer
+    unsigned char * encrypted_output = (unsigned char *)malloc(padded_len);
+
+    // 3. Run the AES-CBC Scrambler
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    mbedtls_aes_setkey_enc(&aes, key, 128); // 128-bit = 16 byte key
+    
+    // We need a local copy of IV because mbedtls modifies it during encryption
+    unsigned char local_iv[16];
+    memcpy(local_iv, iv, 16);
+
+    mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, padded_len, local_iv, padded_buf, encrypted_output);
+
+    // 4. Base64 encode the SCRAMBLED data
+    String base64Result = base64::encode(encrypted_output, padded_len);
+
+    // 5. Cleanup memory (Very important!)
+    free(padded_buf);
+    free(encrypted_output);
+    mbedtls_aes_free(&aes);
+
+    return base64Result;
+}
+
 
 /* Initialize Camera */
 bool initCamera() {
@@ -215,6 +261,8 @@ void runInference() {
     return;
   }
   
+  String encryptedString = encryptImage(fb);
+
   // Convert JPEG to RGB888
   if (!fmt2rgb888(fb->buf, fb->len, PIXFORMAT_JPEG, inferenceBuffer)) {
     Serial.println("JPEG to RGB conversion failed");
@@ -264,13 +312,13 @@ void runInference() {
   }
   
   // Create JSON message
-  StaticJsonDocument<512> doc;
+  DynamicJsonDocument doc(25000); 
   doc["client_id"] = clientID;
   doc["timestamp"] = now;
   doc["label"] = bestLabel;
   doc["confidence"] = bestConfidence;
-  doc["inference_time"] = result.timing.classification;
-  
+  doc["image_aes"] = encryptedString;
+
   JsonArray probabilities = doc.createNestedArray("probabilities");
   for (int i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
     JsonObject prob = probabilities.createNestedObject();
@@ -286,7 +334,7 @@ void runInference() {
     if (mqttClient.publish(TOPIC_CLASSIFICATION, jsonString.c_str())) {
       Serial.printf("Published: %s (%.1f%%)\n", bestLabel.c_str(), bestConfidence * 100);
     } else {
-      Serial.println("MQTT publish failed");
+      Serial.println("MQTT publish failed, try maybe the camera resolution VGA is too big"); 
     }
   }
   

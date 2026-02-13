@@ -11,4 +11,5 @@
 
 # next progress
 - &#10006; <!-- (done) --> try the same but with esp shield
-- &#10004; <!-- (not done) --> reverse engineer cam edge impulse recog (imageRecogStudy.ino)
+- &#10006; <!-- (done) --> reverse engineer cam edge impulse recog (imageRecogStudy.ino)
+- &#10006; <!-- (not done) --> image recognition while simultaneously send the image to mqtt and to laptop
