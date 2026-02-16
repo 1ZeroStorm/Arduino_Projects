@@ -14,10 +14,10 @@
 flowchart TD
 
 A[Troubleshoot ESP32-CAM with shield module ✅] --> B[Reverse engineer image recognition with Edge Impulse imageRecogStudy.ino ✅]
-B --> C[Image recognition while sending image to MQTT Wi-Fi and laptop ❌]
-C --> D[Swap cable to data cable ❌]
-D --> E[Debug MQTT image retrieval from ESP32-CAM with shield and image classification ❌]
-E --> F[Make Python GUI with Tkinter to display probability and image result ❌]
+B --> C[Image recognition while sending image to MQTT Wi-Fi and laptop ✅]
+C --> D[Swap cable to data cable ✅]
+D --> E[Debug MQTT image retrieval from ESP32-CAM with shield and image classification ✅]
+E --> F[Make Python GUI with Tkinter to display probability and image result ✅]
 F --> G[Swap Arduino with ESP32, communicate via Wi-Fi and MQTT ❌]
 G --> H[Connect ESP32 to NEMA 17 stepper motor ❌]
 H --> I[Debug and test full set ❌]

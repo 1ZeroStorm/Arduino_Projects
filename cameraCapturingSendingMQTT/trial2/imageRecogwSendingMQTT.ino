@@ -211,6 +211,8 @@ void connectMQTT() {
   clientID = generateClientID(); // create a unique name for this specific board (e.g., esp32-D1A5)
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   
+  mqttClient.setBufferSize(30000);
+
   int attempts = 0;
   while (!mqttClient.connected() && attempts < 10) {
     if (mqttClient.connect(clientID.c_str())) {

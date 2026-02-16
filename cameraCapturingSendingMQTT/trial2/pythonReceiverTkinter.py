@@ -1,4 +1,5 @@
-# use python f:/github/Arduino_Projects/cameraCapturingSendingMQTT/trial2/pythonReceiver.py
+
+# use python f:/github/Arduino_Projects/cameraCapturingSendingMQTT/trial2/pythonReceiverTkinter.py
 
 import base64
 import json
@@ -7,6 +8,17 @@ import shutil
 import paho.mqtt.client as mqtt
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
+
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+import threading
+import io
+
+# Global variable for the UI label
+panel = None
+info_label = None
+
 
 # --- CONFIGURATION ---
 MQTT_BROKER = "broker.hivemq.com"
@@ -32,7 +44,7 @@ def on_connect(client, userdata, flags, rc):
         print(f"Connection failed with code {rc}")
 
 def on_message(client, userdata, msg):
-    global image_count
+    global image_count, panel, info_label
     try:
         # 1. Parse the JSON wrapper
         payload = json.loads(msg.payload.decode('utf-8'))
@@ -54,14 +66,13 @@ def on_message(client, userdata, msg):
         # Decrypt and remove PKCS7 padding
         decrypted_data = unpad(cipher.decrypt(encrypted_data), AES.block_size)
         
-        # 4. Save to Folder
-        image_count += 1
-        filename = f"{SAVE_FOLDER}/img_{image_count}_{label}.jpg"
-        
-        with open(filename, "wb") as f:
-            f.write(decrypted_data)
-            
-        print(f"[{image_count}] Detected: {label} ({confidence*100:.1f}%) -> Saved to {filename}")
+        # UPDATE UI: Process Image for Tkinter
+        img = Image.open(io.BytesIO(decrypted_data))
+        img = img.resize((320, 240)) # Resize for window
+        img_tk = ImageTk.PhotoImage(img)
+
+        panel.config(image=img_tk)
+        panel.image = img_tk # Keep a reference!
         
     except json.JSONDecodeError:
         print("Error: Received message was not valid JSON.")
@@ -69,6 +80,23 @@ def on_message(client, userdata, msg):
         print(f"Decryption/Padding Error: {ve}. Check if KEY and IV match ESP32.")
     except Exception as e:
         print(f"Unexpected error: {e}")
+
+#tkinter GUI
+def setup_gui():
+    global panel, info_label, root
+    root = tk.Tk()
+    root.title("ESP32-CAM AI Dashboard")
+    root.geometry("400x500")
+
+    # Label for AI Results
+    info_label = tk.Label(root, text="Waiting for data...", font=("Arial", 14), fg="blue")
+    info_label.pack(pady=10)
+
+    # Placeholder for the Image
+    panel = tk.Label(root, text="Image will appear here")
+    panel.pack(pady=10)
+
+    return root
 
 # --- MQTT SETUP ---
 # Callback for newer paho-mqtt versions might need CallbackAPIVersion
@@ -85,6 +113,15 @@ client.connect(MQTT_BROKER, 1883, 60)
 
 # Start the loop
 try:
-    client.loop_forever()
+    # Create the GUI
+    root = setup_gui()
+
+    # Start MQTT in a background thread
+    mqtt_thread = threading.Thread(target=client.loop_forever)
+    mqtt_thread.daemon = True # Closes thread when window is closed
+    mqtt_thread.start()
+
+    # Run the Tkinter main loop (this blocks the main script)
+    root.mainloop()
 except KeyboardInterrupt:
     print("Receiver stopped.")
