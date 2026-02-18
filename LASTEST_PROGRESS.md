@@ -18,7 +18,10 @@ B --> C[Image recognition while sending image to MQTT Wi-Fi and laptop ✅]
 C --> D[Swap cable to data cable ✅]
 D --> E[Debug MQTT image retrieval from ESP32-CAM with shield and image classification ✅]
 E --> F[Make Python GUI with Tkinter to display probability and image result ✅]
-F --> G[Swap Arduino with ESP32, communicate via Wi-Fi and MQTT ❌]
-G --> H[Connect ESP32 to NEMA 17 stepper motor ❌]
-H --> I[Debug and test full set ❌]
+F --> G[Swap Arduino with ESP32, communicate via Wi-Fi and MQTT ✅]
+G --> H[Connect ESP32 to NEMA 17 stepper motor ✅]
+H --> I[build animation in FreeCAD, submit to ICIA ❌]
+I --> J[esp 32 cam communication with esp, full dataset training ❌]
+J --> K[3D print all ❌]
+
 
