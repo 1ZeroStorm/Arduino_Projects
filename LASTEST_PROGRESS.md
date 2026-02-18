@@ -5,8 +5,7 @@
 - camera flipped 180 deg
 
 # run procedure 
-- run the cpp code in arduino
-- set esp 32 cam to 5 volt
+- run the cpp code in arduino, use the cameraCapturingSendingMQTT, trial2 set (lastest)
 - run the python file '''python f:/github/Arduino_Projects/cameraCapturingSendingMQTT/trial1/pythonReceiver.py''''
 
 # next progress
